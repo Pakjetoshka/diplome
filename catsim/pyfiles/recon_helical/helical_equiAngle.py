@@ -1,10 +1,12 @@
 import ctypes as ct
 import numpy as np
 import math
-from CreateHSP import CreateHSP
+import catsim as xc
+from catsim.pyfiles.CommonTools import *
+from catsim.pyfiles.recon_helical.CreateHSP import CreateHSP
 import scipy.io as scio
 import matplotlib.pyplot as plt
-from mapConfigVariablesToHelical import mapConfigVariablesToHelical
+from catsim.pyfiles.recon_helical.mapConfigVariablesToHelical import mapConfigVariablesToHelical
 
 # Init ctypes types
 FLOAT = ct.c_float
@@ -12,6 +14,14 @@ PtrFLOAT = ct.POINTER(FLOAT)
 PtrPtrFLOAT = ct.POINTER(PtrFLOAT)
 PtrPtrPtrFLOAT = ct.POINTER(PtrPtrFLOAT)
 
+def load_prep(cfg):
+
+    print("* Loading the projection data...")
+    prep = xc.rawread(cfg.resultsName + ".prep",
+                  [cfg.protocol.viewCount, cfg.scanner.detectorRowCount, cfg.scanner.detectorColCount],
+                  'float')
+                  
+    return prep
 
 class TestStruct(ct.Structure):
     _fields_ = [
@@ -81,26 +91,28 @@ def load_C_recon_lib():
     # # # # my_path.add_dir_to_path(recon_lib)
 
     #  my_path.find_dir doesn't have the key "reconstruction", use the temp solution below:
-    recon_lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib")
+    recon_lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "./")
 
     # load C/C++ lib
     ll = ct.cdll.LoadLibrary
     if os.name == "nt":
         lib_file = "fdk_equiAngle.dll"
     else:
-        lib_file = "fdk_equiAngle.so"
+        lib_file = "helicalrecon.so"
     clib = ll(os.path.join(recon_lib, lib_file))
 
     return clib
 
 
-def helical_equiAngle(cfg, prep):
+def helical_equiAngle(cfg):
     #load SpectralProjections
-    dataFile = './SpectralProjections.mat'
-    data = scio.loadmat(dataFile)
-    Proj = data['Proj']
-    print(np.shape(Proj))
-    # Proj = prep.transpose(0,2,1)
+    #dataFile = './SpectralProjections.mat'
+    #data = scio.loadmat(dataFile)
+    #Proj = data['Proj'] # viewxchannelxrow
+    #print(np.shape(Proj))
+    prep = load_prep(cfg) #viewxrowxcol
+    Proj = prep.transpose(0,2,1)
+    breakpoint()
 
     # scanner & recon geometry
     SO, DD, YL, ZL, N_Turn, N_2pi, h, dectorYoffset, dectorZoffset, \
@@ -108,18 +120,19 @@ def helical_equiAngle(cfg, prep):
         = mapConfigVariablesToHelical(cfg)
 
 
-    DecAngle = 0.232  # Detector array beam angle along the horizontal direction (rad)
-    DecHeight = 0.2  # Detector array height along the vertical direction (cm)
-    # DecAngle = nMod * 2 * math.atan(modWidth / 2 / sdd)
-    # DecHeight = rowSize * ZL
+    #DecAngle = 0.232  # Detector array beam angle along the horizontal direction (rad)
+    #DecHeight = 0.2  # Detector array height along the vertical direction (cm)
+    DecAngle = nMod * 2 * math.atan(modWidth / 2 / DD)
+    DecHeight = rowSize * ZL
 
     PI =3.14159265358979
     YLC= (YL-1)*0.5+dectorYoffset  # Detector center along the horizontal direction of detector array
     ZLC= (ZL-1)*0.5+dectorZoffset  # Detector center along the vertical direction of detector array
 
+    # beta start and end
     BetaS = -N_Turn*PI
     BetaE =  N_Turn*PI
-    ViewN =  N_Turn*N_2pi+1
+    ViewN =  int(N_Turn*N_2pi)#by ZJY+1
     DecWidth = math.tan(DecAngle*0.5)*(DD)*2
     dYL   =  DecWidth/YL
     dZL   =  DecHeight/ZL
@@ -169,16 +182,18 @@ def helical_equiAngle(cfg, prep):
 
 
     #Preweighting the conebeam projections
+    # what does this mean?
     print("* Pre-weighting the filter...")
     for j in range(YL):
         t=(j-YLC)*dYL
         for k in range(ZL):
               b=(k-ZLC)*dZL
+              # why it is like thius?
               Proj[:,j,k] = PProj[:,j,k]*SO*SO/np.sqrt(SO**4+(SO*b)**2-(b*t)**2)
 
     Proj = Proj.transpose(1,2,0)
 
-    #Perform Ramp filtering
+    #Perform Ramp filtering OK, HSP means this
     print("* Applying the filter...")
     Dg=Proj
     nn = int(math.pow(2, (math.ceil(math.log2(abs(YL))) + 1)))
@@ -200,7 +215,8 @@ def helical_equiAngle(cfg, prep):
 
     #Backproject the filtered data into the 3D space
     # Load the compiled library
-    recon = ct.CDLL("./helicalrecon.dll")
+    #recon = ct.CDLL("helicalrecon.so")
+    recon = load_C_recon_lib()
     # Define arguments of the C function
     recon.fbp.argtypes = [ct.POINTER(TestStruct)]
     # Define the return type of the C function
@@ -228,8 +244,8 @@ def helical_equiAngle(cfg, prep):
     t.RecSize = imageSize
     t.sliceThickness = sliceThickness
 
-    t.RecSizeZ = 128
-    # t.RecSizeZ = sliceCount
+    #t.RecSizeZ = 128
+    t.RecSizeZ = sliceCount
     t.delta = delta
     t.HSCoef = HSCoef
     t.k1 = k1
@@ -282,8 +298,9 @@ def helical_equiAngle(cfg, prep):
 
     return RecA
 
-rec = helical_equiAngle(...,...)
-
-plt.figure()
-plt.imshow(rec[:,:,64], cmap='gray')
-plt.show()
+#rec = helical_equiAngle(...,...)
+#
+#plt.figure()
+#plt.imshow(rec[:,:,1], cmap='gray')
+##plt.savefig
+#plt.show()
